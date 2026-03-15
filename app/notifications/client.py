@@ -53,8 +53,9 @@ class NotificationClient:
         """Sends a notification payload to the provider with automatic retries.
 
         Attempts the POST request up to `_max_retries` times. Returns as soon
-        as the provider responds with HTTP 200. Raises an exception when all
-        attempts are exhausted without a successful response.
+        as the provider responds with HTTP 200. After each failed attempt, it
+        waits briefly with a small random spread before retrying. Raises an
+        exception when all attempts are exhausted without a successful response.
 
         Args:
             payload (dict): JSON-serialisable notification data to send.
@@ -64,7 +65,10 @@ class NotificationClient:
                 to receive an HTTP 200 response from the provider.
         """
 
-        for _ in range(self._max_retries):
+        retry_wait_seconds = 0.5
+        retry_spread_seconds = 0.3
+
+        for attempt in range(self._max_retries):
             try:
                 response = await self._client.post("/v1/notify", json=payload)
             except HTTPError:
@@ -72,6 +76,9 @@ class NotificationClient:
                     'Notification provider transport error, retrying',
                     exc_info=True,
                 )
+                if attempt < self._max_retries - 1:
+                    wait_seconds = retry_wait_seconds + random.uniform(0, retry_spread_seconds)
+                    await asyncio.sleep(wait_seconds)
                 continue
 
             if response.status_code == status.HTTP_200_OK:
@@ -82,6 +89,10 @@ class NotificationClient:
                 'Notification provider returned status %s',
                 response.status_code,
             )
+
+            if attempt < self._max_retries - 1:
+                wait_seconds = retry_wait_seconds + random.uniform(0, retry_spread_seconds)
+                await asyncio.sleep(wait_seconds)
 
         self._logger.error('Notification sending failed after %s retries', self._max_retries)
         raise NotificationClientException()
