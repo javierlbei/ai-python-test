@@ -81,8 +81,8 @@ async def process_request(
             full.
     """
 
-    if request.status == RequestStatus.SENT:
-        _logger.info('Request %s already sent', request.id)
+    if request.status in [RequestStatus.SENT, RequestStatus.FAILED]:
+        _logger.info('Request %s already sent or failed', request.id)
         return Response()
 
     if request.status == RequestStatus.PROCESSING:
