@@ -113,7 +113,6 @@ async def process_request(
     response_model=GetRequestResponse,
 )
 
-@cached(cache=TTLCache(maxsize=1024, ttl=600))
 async def get_request(
     request_id: str,
     request_service=Depends(get_request_service),
