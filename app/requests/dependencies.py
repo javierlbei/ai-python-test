@@ -1,8 +1,12 @@
 """Dependency providers and validators for request routes."""
 
+import asyncio
 import logging
+import time
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from concurrency.service import ConcurrencyService
 from requests.models import UserRequest
@@ -65,3 +69,54 @@ async def existant_request_id(
     _logger.debug('Request with ID %s exists', request_id)
 
     return request
+
+class TimeoutMiddleware(BaseHTTPMiddleware):
+    """Middleware to enforce a timeout on request processing.
+
+    This middleware wraps each request and ensures that it completes within a specified
+    threshold (in seconds). If the request takes longer than the threshold, a 504 Gateway
+    Timeout response is returned.
+
+    Attributes:
+        _threshold (int): Maximum allowed processing time for a request in seconds.
+    """
+
+    def __init__(self, app: FastAPI, threshold: int = 10):
+        """Initializes the TimeoutMiddleware.
+
+        Args:
+            app (FastAPI): The FastAPI application instance.
+            threshold (int, optional): Timeout threshold in seconds. Defaults to 10.
+        """
+        super().__init__(app)
+        self._threshold = threshold
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        """Intercepts the request and enforces the timeout.
+
+        Args:
+            request (Request): The incoming FastAPI request.
+            call_next (Callable): The next middleware or route handler.
+
+        Returns:
+            Response: The response from the route handler or a timeout response.
+        """
+        try:
+            start_time = time.time()
+
+            response_task = asyncio.create_task(call_next(request))
+            response = await asyncio.wait_for(response_task, timeout=self._threshold)
+
+            process_time = time.time() - start_time
+            response.headers['X-Process-Time'] = str(process_time)
+
+            return response
+        except asyncio.TimeoutError:
+            _logger.warning(
+                'Request processing exceeded timeout threshold of %s seconds',
+                self._threshold
+            )
+            return JSONResponse(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                content={'detail': 'Request timed out. Please try again later.'},
+            )
