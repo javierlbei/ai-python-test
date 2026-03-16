@@ -3,6 +3,8 @@
 import asyncio
 import logging
 
+from cache import AsyncTTL
+
 from concurrency.service import ConcurrencyService
 from notifications.client import NotificationClient
 from notifications.exceptions import NotificationClientException
@@ -94,6 +96,7 @@ class RequestService:
         except RequestRepositorySaveException:
             raise RequestServiceSaveException()
 
+    @AsyncTTL(time_to_live=600)
     async def get_request(self, request_id: str) -> UserRequest | None:
         """Retrieves a request by ID.
 

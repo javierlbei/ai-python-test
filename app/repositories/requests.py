@@ -1,6 +1,8 @@
 """In-memory repository for request persistence."""
 
+import asyncio
 import logging
+import random
 from typing import Dict
 from uuid import uuid4
 
@@ -19,6 +21,16 @@ class RequestRepository:
 
         self._data: Dict[str, UserRequest] = {}
         self._logger = logging.getLogger('uvicorn.error')
+
+    async def _simulate_io_delay(self):
+        """Simulates I/O delay for repository operations with a random spread."""
+
+        wait_seconds = 1
+        spread_seconds = 0.5
+
+        total_wait = wait_seconds + random.uniform(0, spread_seconds)
+
+        await asyncio.sleep(total_wait)
 
     async def _generate_id(self) -> str:
         """Generates a unique request ID.
@@ -57,6 +69,8 @@ class RequestRepository:
             str: ID of the persisted request.
         """
 
+        # await self._simulate_io_delay()
+
         if request.id is None:
             generated_id = await self._generate_id()
             request.id = generated_id
@@ -78,6 +92,8 @@ class RequestRepository:
         Returns:
             UserRequest | None: Stored request when found, otherwise ``None``.
         """
+
+        # await self._simulate_io_delay()
 
         request = self._data.get(request_id)
 
