@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import logging
 
 from fastapi import FastAPI
+from fastapi_timeout import TimeoutMiddleware
 
 from concurrency.service import ConcurrencyService
 from notifications.client import NotificationClient
@@ -11,9 +12,7 @@ from notifications.config import NotificationClientConfig
 from prompts.client import PromptClient
 from prompts.config import PromptClientConfig
 from requests import router as requests_router
-from requests.dependencies import TimeoutMiddleware
 from requests.service import RequestService
-
 
 _logger = logging.getLogger('uvicorn.error')
 
@@ -89,4 +88,4 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(requests_router.router)
-app.add_middleware(TimeoutMiddleware, threshold=10)
+app.add_middleware(TimeoutMiddleware, timeout_seconds=5.0)

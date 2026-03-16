@@ -6,11 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from concurrency.exceptions import QueueFullException
 from requests.constants import RequestStatus
-from requests.dependencies import (
-    existant_request_id,
-    get_concurrency_service,
-    get_request_service,
-)
+from requests.dependencies import get_concurrency_service, get_request_service
 from requests.models import UserRequest
 from requests.exceptions import InvalidPayloadException, RequestServiceSaveException
 from requests.schemas import CreateRequestBody, CreateRequestResponse, GetRequestResponse
@@ -62,13 +58,14 @@ async def save_request(
 
 @router.post('/{request_id}/process', status_code=status.HTTP_202_ACCEPTED)
 async def process_request(
-    request: UserRequest = Depends(existant_request_id),
+    request_id: str,
+    request_service=Depends(get_request_service),
     concurrency_service=Depends(get_concurrency_service),
 ) -> Response:
     """Enqueues an existing request for asynchronous processing.
 
     Args:
-        request (UserRequest): Existing request resolved by dependency.
+        user_request (UserRequest): Existing request resolved by dependency.
         concurrency_service (ConcurrencyService): Queue manager for background
             processing.
 
@@ -81,20 +78,29 @@ async def process_request(
             full.
     """
 
-    if request.status in [RequestStatus.SENT, RequestStatus.FAILED]:
-        _logger.info('Request %s already sent or failed', request.id)
+    user_request = await request_service.get_request(request_id)
+
+    if user_request is None:
+        _logger.warning('Request with ID %s was not found', request_id)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Request not found',
+        )
+
+    if user_request.status in [RequestStatus.SENT, RequestStatus.FAILED]:
+        _logger.info('Request %s already sent or failed', user_request.id)
         return Response()
 
-    if request.status == RequestStatus.PROCESSING:
-        _logger.info('Request %s already processing', request.id)
+    if user_request.status == RequestStatus.PROCESSING:
+        _logger.info('Request %s already processing', user_request.id)
         return Response(status_code=status.HTTP_202_ACCEPTED)
 
     try:
-        _logger.info('Queueing request %s for processing', request.id)
-        await concurrency_service.add_to_queue(request)
+        _logger.info('Queueing request %s for processing', user_request.id)
+        await concurrency_service.add_to_queue(user_request)
         return Response(status_code=status.HTTP_202_ACCEPTED)
     except QueueFullException:
-        _logger.warning('Queue full while processing request %s', request.id)
+        _logger.warning('Queue full while processing request %s', user_request.id)
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=('You are being rate-limited. Please try again later.')
@@ -106,15 +112,30 @@ async def process_request(
     status_code=status.HTTP_200_OK,
     response_model=GetRequestResponse,
 )
-async def get_request(request: UserRequest = Depends(existant_request_id)) -> UserRequest:
+
+@cached(cache=TTLCache(maxsize=1024, ttl=600))
+async def get_request(
+    request_id: str,
+    request_service=Depends(get_request_service),
+) -> UserRequest:
     """Retrieves a request by ID.
 
     Args:
-        request (UserRequest): Existing request resolved by dependency.
+        user_request (UserRequest): Existing request resolved by dependency.
 
     Returns:
         UserRequest: Request entity serialized by the response model.
     """
 
-    _logger.debug('Returning request %s', request.id)
-    return request
+    user_request = await request_service.get_request(request_id)
+
+    if user_request is None:
+        _logger.warning('Request with ID %s was not found', request_id)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Request not found',
+        )
+
+    _logger.debug('Returning request %s', user_request.id)
+
+    return user_request
