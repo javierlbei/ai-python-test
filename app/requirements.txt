@@ -6,3 +6,4 @@ tenacity==8.2.3
 json-repair==0.*
 async-cache==2.*
 fastapi-timeout==0.*
+circuitbreaker==2.*

@@ -14,6 +14,7 @@ class RequestRepository:
 
     Attributes:
         _data (Dict[str, UserRequest]): In-memory request store keyed by ID.
+        _logger (logging.Logger): Logger instance for observability.
     """
 
     def __init__(self):
@@ -67,6 +68,10 @@ class RequestRepository:
 
         Returns:
             str: ID of the persisted request.
+
+        Raises:
+            RequestRepositorySaveException: If a unique ID cannot be generated
+                for a new request.
         """
 
         # await self._simulate_io_delay()

@@ -5,11 +5,9 @@ import logging
 
 from cache import AsyncTTL
 
+from client import GenericClient
 from concurrency.service import ConcurrencyService
-from notifications.client import NotificationClient
-from notifications.exceptions import NotificationClientException
-from prompts.client import PromptClient
-from prompts.exceptions import PromptClientException
+from exceptions import GenericClientException
 from requests.constants import RequestStatus
 from requests.exceptions import (
     InvalidJSONContentException,
@@ -39,18 +37,18 @@ class RequestService:
     def __init__(
         self,
         concurrency_service: ConcurrencyService,
-        notification_client: NotificationClient,
-        prompt_client: PromptClient,
-        num_tasks: int = 1
+        notification_client: GenericClient,
+        prompt_client: GenericClient,
+        num_tasks: int = 10
     ):
         """Initializes the request service dependencies.
 
         Args:
             concurrency_service (ConcurrencyService): Queue and synchronization
                 service for background processing.
-            notification_client (NotificationClient): Client responsible for
+            notification_client (GenericClient): Client responsible for
                 sending notifications.
-            prompt_client (PromptClient): Client used to generate model output.
+            prompt_client (GenericClient): Client used to generate model output.
             num_tasks (int): Number of background processor tasks to spawn.
         """
 
@@ -79,6 +77,8 @@ class RequestService:
             str: ID of the saved request.
 
         Raises:
+            InvalidPayloadException: If the request object is not a recognised
+                type.
             RequestServiceSaveException: If the repository cannot save the
                 request.
         """
@@ -93,8 +93,8 @@ class RequestService:
         try:
             saved_request_id = await self._requests_repository.save(request_to_save)
             return saved_request_id
-        except RequestRepositorySaveException:
-            raise RequestServiceSaveException()
+        except RequestRepositorySaveException as exc:
+            raise RequestServiceSaveException() from exc
 
     @AsyncTTL(time_to_live=600)
     async def get_request(self, request_id: str) -> UserRequest | None:
@@ -143,33 +143,57 @@ class RequestService:
                 request = await self._concurrency_service.get_next_request()
 
                 self._logger.info('Processing request with ID: %s', request.id)
-
                 request.status = RequestStatus.PROCESSING
                 await self._requests_repository.save(request)
 
                 try:
-                    self._logger.info('Generating LLM response for '
-                                      'request with ID: %s', request.id)
-                    llm_response = await self._prompt_client.generate_json(request)
+                    self._logger.info(
+                        'Generating LLM response for request with ID: %s',
+                        request.id
+                    )
+                    llm_response = await self._prompt_client.generate_json(
+                        request
+                    )
 
-                    self._logger.info('LLM response generated for request '
-                                      'with ID: %s, extracting JSON content', request.id)
+
+                    self._logger.info(
+                        'LLM response generated for request with ID: %s, '
+                        'extracting JSON content',
+                        request.id
+                    )
                     extracted_data = await json_extractor(llm_response)
 
-                    self._logger.info('JSON content extracted for request with '
-                                      'ID: %s, sending notification', request.id)
-                    await self._notification_client.send_notification(extracted_data)
 
-                    self._logger.info('Notification sent for request with '
-                                      'ID: %s', request.id)
+                    self._logger.info(
+                        'JSON content extracted for request with ID: %s, '
+                        'sending notification',
+                        request.id
+                    )
+                    await self._notification_client.send_notification(
+                        extracted_data
+                    )
+
+
+                    self._logger.info(
+                        'Notification sent for request with ID: %s',
+                        request.id
+                    )
                     request.status = RequestStatus.SENT
-                except (PromptClientException, InvalidJSONContentException):
-                    self._logger.info('Request with ID: %s failed due to invalid '
-                                      'or missing LLM content', request.id)
-                    request.status = RequestStatus.FAILED
-                except NotificationClientException:
-                    self._logger.info('Notification sending failed for request with '
-                                      'ID: %s', request.id)
+                except GenericClientException as e:
+                    client_type = e.client_type
+
+                    self._logger.info(
+                        '%s sending failed for request with ID: %s',
+                        client_type,
+                        request.id
+                    )
+
+                    request.status = RequestStatus.QUEUED
+                except InvalidJSONContentException:
+                    self._logger.info(
+                        'Request with ID: %s failed due to invalid LLM response',
+                        request.id
+                    )
                     request.status = RequestStatus.FAILED
                 except Exception:
                     self._logger.error(

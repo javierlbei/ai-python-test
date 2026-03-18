@@ -1,107 +1,93 @@
 """Client for generating structured content from user prompts."""
 
-import logging
+from circuitbreaker import CircuitBreaker, CircuitBreakerError
+from httpx import AsyncClient, Request
+from tenacity import RetryError
 
-from fastapi import status
-from httpx import AsyncClient, HTTPError
-
-from prompts.config import PromptClientConfig
-from prompts.exceptions import PromptClientException
+from constants import HTTPMethod
+from client import GenericClient
+from prompts.exceptions import(
+    PromptClientCircuitBreakerException,
+    PromptClientRetryException,
+)
 from prompts.utils import generate_payload
 from requests.models import UserRequest
 
-class PromptClient:
-    """Calls the prompt provider to transform user input into JSON-like text.
 
-    Attributes:
-        _client (AsyncClient): HTTP client used to call the provider API.
-        _system_prompt (str): System instruction forwarded to the provider.
-        _max_retries (int): Maximum number of provider call attempts.
-        _logger (logging.Logger): Logger instance for observability.
-    """
+class PromptClient(GenericClient):
+    """Specializes ``GenericClient`` for LLM prompt extraction."""
 
     def __init__(
         self,
-        client_settings: PromptClientConfig
+        http_client: AsyncClient,
+        circuit_breaker: CircuitBreaker,
+        system_prompt: str,
+        max_retries: int = 3,
     ):
-        """Initializes a prompt client using configuration values.
+        """Creates a PromptClient from the supplied dependencies.
 
         Args:
-            client_settings (PromptClientConfig): Client base URL,
-                authentication header, system prompt, and retry limit.
+            http_client (AsyncClient): Pre-configured async HTTP client used
+                for communicating with the prompt provider.
+            circuit_breaker (CircuitBreaker): Circuit breaker instance that
+                guards prompt provider calls.
+            system_prompt (str): System instruction prepended to every
+                extraction request.
+            max_retries (int): Maximum number of delivery attempts before
+                raising an exception.
         """
 
-        self._client = AsyncClient(
-            base_url=client_settings.BASE_URL,
-            headers=client_settings.AUTH_HEADER,
+        super().__init__(
+            http_client=http_client,
+            circuit_breaker=circuit_breaker,
+            max_retries=max_retries,
         )
-        self._system_prompt = client_settings.SYSTEM_PROMPT
-        self._max_retries = client_settings.MAX_RETRIES
-        self._logger = logging.getLogger('uvicorn.error')
+        self._system_prompt = system_prompt
 
-    async def close(self):
-        """Closes the underlying HTTP client and releases network resources."""
+    async def generate_json(self, user_request: UserRequest):
+        """Sends user input to the LLM and returns structured output.
 
-        await self._client.aclose()
-
-    async def generate_json(
-        self,
-        request: UserRequest
-    ):
-        """Generates model output for a request.
-
-        Sends the request input to the prompt provider and retries failed calls
-        until either a successful response is received or the retry budget is
-        exhausted.
+        Builds a prompt payload, posts it to the extraction endpoint, and
+        parses the model's response into a dictionary containing the
+        original user input and the raw LLM output.
 
         Args:
-            request (UserRequest): Request containing the user input and ID.
+            user_request (UserRequest): Domain object holding the user's
+                raw input text.
 
         Returns:
-            dict[str, str]: A dictionary with `user_input` and `llm_response`.
+            dict: Dictionary with ``user_input`` and ``llm_response`` keys.
 
         Raises:
-            PromptClientException: If no successful response is received after
-                all retry attempts.
+            PromptClientException: If the request fails after all retries
+                or the circuit breaker is open.
         """
-        self._logger.info('Generating JSON for request with ID: %s', request.id)
 
-        for _ in range(self._max_retries):
-            try:
-                response = await self._client.post(
-                    "/v1/ai/extract",
-                    json=generate_payload(self._system_prompt, request.user_input),
-                )
-            except HTTPError:
-                self._logger.warning(
-                    'Prompt provider transport error for request with ID: %s',
-                    request.id,
-                    exc_info=True,
-                )
-                continue
-
-            if response.status_code == status.HTTP_200_OK:
-                generated_response = (
-                    response.json()
-                    .get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                )
-
-                self._logger.info('JSON generated for request with ID: %s', request.id)
-
-                return {'user_input': request.user_input, 'llm_response': generated_response}
-
-            self._logger.warning(
-                'Prompt provider returned status %s for request with ID: %s',
-                response.status_code,
-                request.id,
+        try:
+            response = await super().request(
+                method=HTTPMethod.POST,
+                endpoint="/v1/ai/extract",
+                json=generate_payload(self._system_prompt, user_request.user_input)
             )
 
-        self._logger.info(
-            'Failed to generate JSON for request with ID: %s after %s retries',
-            request.id,
-            self._max_retries,
-        )
+            llm_response = (
+                response.json()
+                .get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
 
-        raise PromptClientException()
+            client_response = {
+                'user_input': user_request.user_input,
+                'llm_response': llm_response
+            }
+
+            return client_response
+        except RetryError as exc:
+            raise PromptClientRetryException(
+                "Failed to generate JSON after maximum retries"
+            ) from exc
+        except CircuitBreakerError as exc:
+            raise PromptClientCircuitBreakerException(
+                "Circuit breaker is open, skipping JSON generation"
+            ) from exc

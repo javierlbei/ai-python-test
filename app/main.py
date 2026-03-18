@@ -3,23 +3,25 @@
 from contextlib import asynccontextmanager
 import logging
 
+from circuitbreaker import CircuitBreaker
 from fastapi import FastAPI
 from fastapi_timeout import TimeoutMiddleware
+from httpx import AsyncClient
 
 from concurrency.service import ConcurrencyService
 from notifications.client import NotificationClient
-from notifications.config import NotificationClientConfig
 from prompts.client import PromptClient
-from prompts.config import PromptClientConfig
 from requests import router as requests_router
 from requests.service import RequestService
 
 _logger = logging.getLogger('uvicorn.error')
 
 
-PROVIDER_BASE_URL = "http://localhost:3001"
-PROVIDER_AUTH_HEADER = {"X-API-Key": "test-dev-2026"}
+PROVIDER_BASE_URL = 'http://localhost:3001'
+PROVIDER_AUTH_HEADER = {'X-API-Key': 'test-dev-2026'}
 MAX_RETRIES = 3
+FAIL_THRESHOLD = 1
+RESET_TIMEOUT = 60
 NUM_WORKERS = 10
 SYSTEM_PROMPT = """
 You are a data extractor for a notification service. Extract and return a JSON object based strictly on the user's request. Do not introduce external information, add explanations, or clarify ambiguous terms—only extract what is explicitly provided.
@@ -45,13 +47,27 @@ If any mandatory field cannot be extracted or validated, ask the user to provide
 """
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(fastapi_app: FastAPI):
+    """Manages application startup and shutdown lifecycle.
+
+    On startup, starts background request processors and attaches shared
+    services to application state. On shutdown, stops processors and
+    closes external provider clients.
+
+    Args:
+        fastapi_app (FastAPI): The FastAPI application instance.
+
+    Yields:
+        None: Control is yielded to the application between startup and
+            shutdown.
+    """
+
     # Startup
     _logger.info('Starting application services')
     await request_service.start()
 
-    app.state.concurrency_service = concurrency_service
-    app.state.request_service = request_service
+    fastapi_app.state.concurrency_service = concurrency_service
+    fastapi_app.state.request_service = request_service
 
     yield
 
@@ -61,21 +77,40 @@ async def lifespan(app: FastAPI):
     await notification_client.close()
     await prompt_client.close()
 
-
+# Instantiate concurrency service
 concurrency_service = ConcurrencyService()
-notification_client_config = NotificationClientConfig(
-    base_url=PROVIDER_BASE_URL,
-    auth_header=PROVIDER_AUTH_HEADER,
+
+
+# Instantiate notification client
+notification_client = NotificationClient(
+    http_client=AsyncClient(
+        base_url=PROVIDER_BASE_URL,
+        headers=PROVIDER_AUTH_HEADER,
+    ),
+    circuit_breaker=CircuitBreaker(
+        failure_threshold=FAIL_THRESHOLD,
+        recovery_timeout=RESET_TIMEOUT,
+    ),
     max_retries=MAX_RETRIES,
 )
-notification_client = NotificationClient(notification_client_config)
-prompt_client_config = PromptClientConfig(
-    base_url=PROVIDER_BASE_URL,
-    auth_header=PROVIDER_AUTH_HEADER,
+
+
+# Instantiate prompt client
+prompt_client = PromptClient(
+    http_client=AsyncClient(
+        base_url=PROVIDER_BASE_URL,
+        headers=PROVIDER_AUTH_HEADER,
+    ),
+    circuit_breaker=CircuitBreaker(
+        failure_threshold=FAIL_THRESHOLD,
+        recovery_timeout=RESET_TIMEOUT,
+    ),
     system_prompt=SYSTEM_PROMPT,
     max_retries=MAX_RETRIES,
 )
-prompt_client = PromptClient(prompt_client_config)
+
+
+# Instantiate request service with dependencies
 request_service = RequestService(
     concurrency_service,
     notification_client,
@@ -83,9 +118,14 @@ request_service = RequestService(
     NUM_WORKERS,
 )
 
+
+# Create FastAPI app and include routes
 app = FastAPI(
-    title="Notification Service (Technical Test)",
+    title='Notification Service (Technical Test)',
     lifespan=lifespan,
 )
 app.include_router(requests_router.router)
+
+
+# Add timeout middleware to enforce a maximum processing time per request
 app.add_middleware(TimeoutMiddleware, timeout_seconds=5.0)

@@ -5,8 +5,8 @@ into an asyncio.Queue, prevents duplicate submissions, and exposes helpers
 for consumers to retrieve and acknowledge processed requests.
 """
 
-import logging
 import asyncio
+import logging
 
 from concurrency.exceptions import QueueFullException
 from requests.models import UserRequest
@@ -23,6 +23,7 @@ class ConcurrencyService:
             the enqueued-request set and performing queue operations.
         _enqueued_requests (set[str]): IDs of requests currently in the queue,
             used to prevent duplicate submissions.
+        _logger (logging.Logger): Logger instance for observability.
     """
 
     def __init__(self, queue_size: int = 0):
@@ -70,11 +71,11 @@ class ConcurrencyService:
                 self._logger.info(
                     'Request with ID: %s added to the queue', request.id
                 )
-            except asyncio.QueueFull:
+            except asyncio.QueueFull as exc:
                 self._logger.error(
                     'Queue is full, cannot add request with ID: %s', request.id
                 )
-                raise QueueFullException()
+                raise QueueFullException() from exc
 
             self._enqueued_requests.add(request.id)
 

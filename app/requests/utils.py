@@ -39,7 +39,11 @@ async def _matches_user_input(text: str, user_input: str) -> bool:
     return intersection / union >= 0.5
 
 async def _attribute_type(value: str, user_input: str) -> str | None:
-    """Checks if the provided value is an email or a phone number.
+    """Classifies a model output value as a notification payload attribute.
+
+    Detects whether the value is an email/phone (``'to'``), a known
+    notification channel (``'type'``), or text similar to the original
+    user input (``'message'``).
 
     Args:
         value (str): Candidate value from model output.
@@ -80,14 +84,14 @@ async def _sanitize_json(json: dict, user_input: str) -> dict:
     for key, value in json.items():
         if key in CreateNotificationBodyAttribute:
             continue
-        else:
-            attribute_name = await _attribute_type(value, user_input)
 
-            if attribute_name is not None:
-                keys_to_add[attribute_name] = value
-                keys_to_remove.append(key)
-            else:
-                keys_to_remove.append(key)
+        attribute_name = await _attribute_type(value, user_input)
+
+        if attribute_name is not None:
+            keys_to_add[attribute_name] = value
+            keys_to_remove.append(key)
+        else:
+            keys_to_remove.append(key)
 
     for key, value in keys_to_add.items():
         json[key] = value
@@ -95,7 +99,8 @@ async def _sanitize_json(json: dict, user_input: str) -> dict:
     for key in keys_to_remove:
         del json[key]
 
-    if all(key in json for key in CreateNotificationBodyAttribute): return json
+    if all(key in json for key in CreateNotificationBodyAttribute):
+        return json
 
     return None
 
