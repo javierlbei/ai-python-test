@@ -6,19 +6,24 @@ for consumers to retrieve and acknowledge processed requests.
 """
 
 import asyncio
-import logging
+from typing import Generic, TypeVar
 
-from concurrency.exceptions import QueueFullException
-from requests.models import UserRequest
+from exceptions import QueueFullError
+from user_requests.constants import RequestStatus
+from user_requests.models import UserRequest
+from utils import get_logger
 
-class ConcurrencyService:
+T = TypeVar('T')
+
+class ConcurrencyService(Generic[T]):
     """Manages a bounded async queue of pending user requests.
 
     Ensures each request is processed at most once at a time by tracking
     enqueued request IDs under a lock before admission.
 
     Attributes:
-        _queue (asyncio.Queue): Bounded async FIFO queue holding pending requests.
+        _queue (asyncio.Queue): Bounded async FIFO queue holding
+            pending requests.
         _lock (asyncio.Lock): Ensures exclusive access when reading/writing
             the enqueued-request set and performing queue operations.
         _enqueued_requests (set[str]): IDs of requests currently in the queue,
@@ -26,20 +31,23 @@ class ConcurrencyService:
         _logger (logging.Logger): Logger instance for observability.
     """
 
-    def __init__(self, queue_size: int = 0):
+    def __init__(self, queue_size: int = 0, max_retries: int = 3):
         """Creates a new ConcurrencyService with a bounded async queue.
 
         Args:
             queue_size (int): Maximum number of requests the queue can hold
                 simultaneously. ``0`` means unbounded (default: ``0``).
+            max_retries (int): Maximum number of retries for failed requests.
+                (default: ``3``).
         """
 
         self._queue = asyncio.Queue(queue_size)
         self._lock = asyncio.Lock()
         self._enqueued_requests = set()
-        self._logger = logging.getLogger('uvicorn.error')
+        self._max_retries = max_retries
+        self._logger = get_logger()
 
-    async def add_to_queue(self, request: UserRequest):
+    async def add_to_queue(self, request: T) -> None:
         """Adds a request to the queue if it is not already enqueued.
 
         Acquires the internal lock to atomically check for duplicates and
@@ -48,7 +56,7 @@ class ConcurrencyService:
         its capacity a ``QueueFullException`` is raised.
 
         Args:
-            request (UserRequest): The request to enqueue.
+            request (T): The request to enqueue.
 
         Raises:
             QueueFullException: Raised when the queue is at full capacity and
@@ -75,23 +83,23 @@ class ConcurrencyService:
                 self._logger.error(
                     'Queue is full, cannot add request with ID: %s', request.id
                 )
-                raise QueueFullException() from exc
+                raise QueueFullError() from exc
 
             self._enqueued_requests.add(request.id)
 
-    async def get_next_request(self):
+    async def get_next_request(self) -> T:
         """Retrieves and removes the next request from the queue.
 
         Suspends the caller until a request becomes available if the queue
         is currently empty.
 
         Returns:
-            UserRequest: The next request in FIFO order.
+            T: The next request in FIFO order.
         """
 
         return await self._queue.get()
 
-    async def complete_task(self, request_id: str):
+    async def complete_task(self, request_id: str) -> None:
         """Marks a previously dequeued request as fully processed.
 
         Acquires the internal lock, signals ``asyncio.Queue.task_done`` so
@@ -113,6 +121,7 @@ class ConcurrencyService:
                 return
 
             self._logger.warning(
-                'Request with ID: %s was completed but not found in the queue set',
+                'Request with ID: %s was completed '
+                'but not found in the queue set',
                 request_id,
             )

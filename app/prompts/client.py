@@ -1,29 +1,23 @@
 """Client for generating structured content from user prompts."""
 
-from circuitbreaker import CircuitBreaker, CircuitBreakerError
-from httpx import AsyncClient, Request
+from circuitbreaker import CircuitBreakerError
+from httpx import Response
 from tenacity import RetryError
 
-from constants import HTTPMethod
 from client import GenericClient
-from prompts.exceptions import(
-    PromptClientCircuitBreakerException,
-    PromptClientRetryException,
+from constants import HTTPMethod
+from prompts.exceptions import (
+    PromptClientCircuitBreakerError,
+    PromptClientRetryError,
 )
 from prompts.utils import generate_payload
-from requests.models import UserRequest
+from user_requests.models import UserRequest
 
 
 class PromptClient(GenericClient):
     """Specializes ``GenericClient`` for LLM prompt extraction."""
 
-    def __init__(
-        self,
-        http_client: AsyncClient,
-        circuit_breaker: CircuitBreaker,
-        system_prompt: str,
-        max_retries: int = 3,
-    ):
+    def __init__(self, *, system_prompt: str, **kwargs):
         """Creates a PromptClient from the supplied dependencies.
 
         Args:
@@ -37,14 +31,24 @@ class PromptClient(GenericClient):
                 raising an exception.
         """
 
-        super().__init__(
-            http_client=http_client,
-            circuit_breaker=circuit_breaker,
-            max_retries=max_retries,
-        )
+        super().__init__(**kwargs)
         self._system_prompt = system_prompt
 
-    async def generate_json(self, user_request: UserRequest):
+    def _wrap_retry_error(self, exc: RetryError) -> Exception:
+        return PromptClientRetryError(
+            "Failed to generate JSON after maximum retries"
+        )
+
+    def _wrap_circuit_breaker_error(
+        self, exc: CircuitBreakerError,
+    ) -> Exception:
+        return PromptClientCircuitBreakerError(
+            "Circuit breaker is open, skipping JSON generation"
+        )
+
+    async def generate_json(
+        self, user_request: UserRequest,
+    ) -> dict:
         """Sends user input to the LLM and returns structured output.
 
         Builds a prompt payload, posts it to the extraction endpoint, and
@@ -59,35 +63,25 @@ class PromptClient(GenericClient):
             dict: Dictionary with ``user_input`` and ``llm_response`` keys.
 
         Raises:
-            PromptClientException: If the request fails after all retries
-                or the circuit breaker is open.
+            PromptClientRetryError: If the request fails after all
+                retries.
+            PromptClientCircuitBreakerError: If the circuit breaker
+                is open.
         """
 
-        try:
-            response = await super().request(
-                method=HTTPMethod.POST,
-                endpoint="/v1/ai/extract",
-                json=generate_payload(self._system_prompt, user_request.user_input)
-            )
+        response = await super().request(
+            method=HTTPMethod.POST,
+            endpoint="/v2/ai/extract",
+            json=generate_payload(self._system_prompt, user_request.user_input),
+        )
 
-            llm_response = (
-                response.json()
-                .get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-            )
+        choices = response.json().get("choices", [])
+        llm_response = (
+            choices[0].get("message", {}).get("content", "")
+            if choices else ""
+        )
 
-            client_response = {
-                'user_input': user_request.user_input,
-                'llm_response': llm_response
-            }
-
-            return client_response
-        except RetryError as exc:
-            raise PromptClientRetryException(
-                "Failed to generate JSON after maximum retries"
-            ) from exc
-        except CircuitBreakerError as exc:
-            raise PromptClientCircuitBreakerException(
-                "Circuit breaker is open, skipping JSON generation"
-            ) from exc
+        return {
+            'user_input': user_request.user_input,
+            'llm_response': llm_response,
+        }

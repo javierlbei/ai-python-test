@@ -1,44 +1,37 @@
 """Custom exceptions for notification provider calls."""
 
-from exceptions import GenericClientException
+from exceptions import GenericClientError
 
-class NotificationClientException(GenericClientException):
-    """Raised when a notification cannot be delivered."""
 
-    def __init__(self, message, error_type):
-        """Initializes the notification exception.
+class NotificationClientCircuitBreakerError(GenericClientError):
+    """Raised when the circuit breaker is open for the notification provider."""
+
+    def __init__(self, message):
+        """Initializes the circuit breaker error.
 
         Args:
             message (str): Human-readable error description.
-            error_type (str): Category of the underlying failure.
         """
 
         super().__init__(
             message,
-            error_type,
-            client_type="NotificationClient"
+            error_type="CircuitBreakerError",
+            client_type="NotificationClient",
         )
 
-class NotificationClientCircuitBreakerException(NotificationClientException):
-    """Raised when the circuit breaker is open for the notification provider."""
 
-    def __init__(self, message):
-        """Initializes the circuit breaker exception.
-
-        Args:
-            message (str): Human-readable error description.
-        """
-
-        super().__init__(message, error_type="CircuitBreakerError")
-
-class NotificationClientRetryException(NotificationClientException):
+class NotificationClientRetryError(GenericClientError):
     """Raised when the notification provider request fails after all retries."""
 
     def __init__(self, message):
-        """Initializes the retry exception.
+        """Initializes the retry error.
 
         Args:
             message (str): Human-readable error description.
         """
 
-        super().__init__(message, error_type="RetryError")
+        super().__init__(
+            message,
+            error_type="RetryError",
+            client_type="NotificationClient",
+        )

@@ -3,7 +3,7 @@ uvicorn[standard]==0.27.1
 httpx==0.27.0
 pydantic==2.6.3
 tenacity==8.2.3
-json-repair==0.*
-async-cache==2.*
-fastapi-timeout==0.*
-circuitbreaker==2.*
+json-repair==0.58.6
+fastapi-timeout==0.1.1.post2
+circuitbreaker==2.1.3
+dependency-injector==4.48.3

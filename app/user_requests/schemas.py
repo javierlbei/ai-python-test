@@ -1,8 +1,8 @@
 """Pydantic schemas used by request API endpoints."""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from requests.constants import RequestStatus
+from user_requests.constants import RequestStatus
 
 
 class CreateRequestBody(BaseModel):
@@ -12,7 +12,8 @@ class CreateRequestBody(BaseModel):
         user_input (str): User input that should be processed.
     """
 
-    user_input: str
+    user_input: str = Field(min_length=1, max_length=4096)
+
 
 class CreateRequestResponse(BaseModel):
     """Response model for successful request creation.
@@ -22,6 +23,7 @@ class CreateRequestResponse(BaseModel):
     """
 
     id: str
+
 
 class GetRequestResponse(BaseModel):
     """Response model for request retrieval.

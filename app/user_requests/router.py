@@ -1,20 +1,49 @@
 """API routes for creating, processing, and retrieving requests."""
 
-import logging
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from dependency_injector.wiring import inject, Provide
+from fastapi import APIRouter, Depends, HTTPException, Path, Response, status
 
-from concurrency.exceptions import QueueFullException
-from requests.constants import RequestStatus
-from requests.dependencies import get_concurrency_service, get_request_service
-from requests.models import UserRequest
-from requests.exceptions import InvalidPayloadException, RequestServiceSaveException
-from requests.schemas import CreateRequestBody, CreateRequestResponse, GetRequestResponse
-
-
-_logger = logging.getLogger('uvicorn.error')
+from dependencies import Container
+from exceptions import QueueFullError
+from user_requests.concurrency import UserRequestConcurrencyService
+from user_requests.constants import RequestStatus
+from user_requests.exceptions import RequestServiceSaveError
+from user_requests.models import UserRequest
+from user_requests.processor import RequestProcessor
+from user_requests.schemas import (
+    CreateRequestBody,
+    CreateRequestResponse,
+    GetRequestResponse,
+)
+from user_requests.service import RequestService
+from utils import get_logger
 
 router = APIRouter(prefix='/v1/requests')
+_logger = get_logger()
+
+
+@inject
+async def startup(
+    request_processor: RequestProcessor = Provide[
+        Container.request_processor
+    ],
+):
+    await request_processor.start()
+
+
+@inject
+async def shutdown(
+    request_processor: RequestProcessor = Provide[
+        Container.request_processor
+    ],
+    notification_client = Provide[Container.notification_client],
+    prompt_client = Provide[Container.prompt_client],
+):
+    await request_processor.stop()
+    await notification_client.close()
+    await prompt_client.close()
 
 
 @router.post(
@@ -22,22 +51,24 @@ router = APIRouter(prefix='/v1/requests')
     status_code=status.HTTP_201_CREATED,
     response_model=CreateRequestResponse,
 )
+@inject
 async def save_request(
     request: CreateRequestBody,
-    request_service=Depends(get_request_service),
+    request_service: Annotated[
+        RequestService,
+        Depends(Provide[Container.request_service]),
+    ],
 ) -> CreateRequestResponse:
     """Creates a new request and persists it.
 
     Args:
         request (CreateRequestBody): Payload containing user input.
-        request_service (RequestService): Service used for persistence.
 
     Returns:
         CreateRequestResponse: Response containing the created request ID.
 
     Raises:
-        HTTPException: Raised with status 500 when request persistence fails,
-            or status 400 when the request payload is invalid.
+        HTTPException: Raised with status 500 when request persistence fails.
     """
 
     try:
@@ -45,31 +76,38 @@ async def save_request(
         created_request_id = await request_service.save_request(request)
 
         return CreateRequestResponse(id=created_request_id)
-    except RequestServiceSaveException as exc:
+    except RequestServiceSaveError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=('The service could not save the request. '
                     'Please try again later.')
         ) from exc
-    except InvalidPayloadException as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=('Invalid request payload. Please ensure the input is valid.')
-        ) from exc
 
-@router.post('/{request_id}/process', status_code=status.HTTP_202_ACCEPTED)
+
+@router.post(
+    '/{request_id}/process',
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@inject
 async def process_request(
-    request_id: str,
-    request_service=Depends(get_request_service),
-    concurrency_service=Depends(get_concurrency_service),
+    request_id: Annotated[str, Path(pattern=r'^[a-f0-9]{32}$')],
+    request_service: Annotated[
+        RequestService,
+        Depends(Provide[Container.request_service]),
+    ],
+    request_processor: Annotated[
+        RequestProcessor,
+        Depends(Provide[Container.request_processor]),
+    ],
+    concurrency_service: Annotated[
+        UserRequestConcurrencyService,
+        Depends(Provide[Container.concurrency_service]),
+    ],
 ) -> Response:
     """Enqueues an existing request for asynchronous processing.
 
     Args:
         request_id (str): Identifier of the request to process.
-        request_service (RequestService): Service used to retrieve the request.
-        concurrency_service (ConcurrencyService): Queue manager for background
-            processing.
 
     Returns:
         Response: Empty response with status 200 when already sent or failed,
@@ -89,7 +127,7 @@ async def process_request(
             detail='Request not found',
         )
 
-    if user_request.status in [RequestStatus.SENT, RequestStatus.FAILED]:
+    if user_request.status in (RequestStatus.SENT, RequestStatus.FAILED):
         _logger.info('Request %s already sent or failed', user_request.id)
         return Response()
 
@@ -101,11 +139,15 @@ async def process_request(
         _logger.info('Queueing request %s for processing', user_request.id)
         await concurrency_service.add_to_queue(user_request)
         return Response(status_code=status.HTTP_202_ACCEPTED)
-    except QueueFullException as exc:
-        _logger.warning('Queue full while processing request %s', user_request.id)
+    except QueueFullError as exc:
+        _logger.warning(
+            'Queue full while processing request %s',
+            user_request.id,
+        )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=('You are being rate-limited. Please try again later.')
+            detail='You are being rate-limited. '
+                   'Please try again later.',
         ) from exc
 
 
@@ -114,16 +156,18 @@ async def process_request(
     status_code=status.HTTP_200_OK,
     response_model=GetRequestResponse,
 )
-
+@inject
 async def get_request(
-    request_id: str,
-    request_service=Depends(get_request_service),
+    request_id: Annotated[str, Path(pattern=r'^[a-f0-9]{32}$')],
+    request_service: Annotated[
+        RequestService,
+        Depends(Provide[Container.request_service]),
+    ],
 ) -> UserRequest:
     """Retrieves a request by ID.
 
     Args:
         request_id (str): Identifier of the request to retrieve.
-        request_service (RequestService): Service used to look up the request.
 
     Returns:
         UserRequest: Request entity serialized by the response model.

@@ -1,0 +1,15 @@
+[tool.pytest.ini_options]
+testpaths = ["test"]
+pythonpath = ["app"]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["app"]
+omit = [
+    "app/__pycache__/*",
+    "app/**/__pycache__/*",
+    "app/dependencies.py",
+]
+
+[tool.coverage.report]
+show_missing = true

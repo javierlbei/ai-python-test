@@ -2,7 +2,8 @@
 
 from dataclasses import dataclass
 
-from requests.constants import RequestStatus
+from user_requests.constants import RequestStatus
+
 
 @dataclass
 class UserRequest:

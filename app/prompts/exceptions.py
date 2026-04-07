@@ -1,44 +1,37 @@
 """Custom exceptions for prompt provider interactions."""
 
-from exceptions import GenericClientException
+from exceptions import GenericClientError
 
-class PromptClientException(GenericClientException):
-    """Raised when the prompt provider request cannot be completed."""
 
-    def __init__(self, message, error_type):
-        """Initializes the prompt exception.
+class PromptClientCircuitBreakerError(GenericClientError):
+    """Raised when the circuit breaker is open for the prompt provider."""
+
+    def __init__(self, message):
+        """Initializes the circuit breaker error.
 
         Args:
             message (str): Human-readable error description.
-            error_type (str): Category of the underlying failure.
         """
 
         super().__init__(
             message,
-            error_type,
-            client_type="PromptClient"
+            error_type="CircuitBreakerError",
+            client_type="PromptClient",
         )
 
-class PromptClientCircuitBreakerException(PromptClientException):
-    """Raised when the circuit breaker is open for the prompt provider."""
 
-    def __init__(self, message):
-        """Initializes the circuit breaker exception.
-
-        Args:
-            message (str): Human-readable error description.
-        """
-
-        super().__init__(message, error_type="CircuitBreakerError")
-
-class PromptClientRetryException(PromptClientException):
+class PromptClientRetryError(GenericClientError):
     """Raised when the prompt provider request fails after all retries."""
 
     def __init__(self, message):
-        """Initializes the retry exception.
+        """Initializes the retry error.
 
         Args:
             message (str): Human-readable error description.
         """
 
-        super().__init__(message, error_type="RetryError")
+        super().__init__(
+            message,
+            error_type="RetryError",
+            client_type="PromptClient",
+        )

@@ -1,12 +1,13 @@
 """Helper utilities for prompt-provider request payloads."""
 
-import logging
+
+from utils import get_logger
 
 
-_logger = logging.getLogger('uvicorn.error')
+_logger = get_logger()
 
 
-def generate_payload(system_prompt: str, user_input: str):
+def generate_payload(system_prompt: str, user_input: str) -> dict:
     """Builds the request payload for prompt extraction.
 
     Args:

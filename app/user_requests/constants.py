@@ -10,12 +10,14 @@ class CreateNotificationBodyAttribute(str, Enum):
     TYPE = 'type'
     MESSAGE = 'message'
 
+
 class RequestType(str, Enum):
     """Supported outbound notification channels."""
 
     EMAIL = 'email'
     SMS = 'sms'
     PUSH = 'push'
+
 
 class RequestStatus(str, Enum):
     """Lifecycle states for request processing."""
